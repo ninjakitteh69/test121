@@ -1,0 +1,19 @@
+---
+- name: Create ALB stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-ALB"
+    template: "roles/alb/files/template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      SERVICE: "{{ role_name|upper }}"
+      Service: "{{ role_name|lower }}"
+      AZCount: "{{ vpc_az_count }}"
+      CertificateArn: "{{ alb_certificate_arn }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"

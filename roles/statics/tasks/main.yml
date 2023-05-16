@@ -1,0 +1,16 @@
+---
+- name: Create STATICS stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-STATICS"
+    template: "roles/statics/files/template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"
+      version: "{{ project_version }}"

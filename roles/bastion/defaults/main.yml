@@ -1,0 +1,10 @@
+af_south_1_bastion_instance_type: t3.small
+ap_southeast_1_bastion_instance_type: t3.small
+ap_southeast_2_bastion_instance_type: t3.small
+bastion_instance_type: "t3a.small"
+bastion_remote_access_CIDR: "0.0.0.0/0"
+bastion_warn_high_cpu_percent: "50"
+bastion_tag: "1.5.10"
+source_repo_url: ""
+project_version: ""
+bastion_dns_role: "arn:aws:iam::415983589830:role/bastion-dns-role"

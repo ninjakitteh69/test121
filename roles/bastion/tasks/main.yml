@@ -1,0 +1,59 @@
+---
+- name: Find bastion AMI
+  ec2_ami_info:
+    region: "{{ region }}"
+    owners: 415983589830
+    filters:
+      name: "shared-bastion-{{ bastion_tag }}-x86_64"
+  register: ami
+- fail:
+    msg: "AMI for shared-bastion-{{ bastion_tag }}-x86_64 not found."
+  when: ami.images[0] is not defined
+
+- name: set icinga ips list
+  set_fact:
+    icinga_ip_list: "{{ lookup('aws_ssm', 'monitoring-icinga-ips', region=region).strip().split(',') }}"
+
+- name: Create BASTION EFS stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-BASTIONEFS"
+    template: "roles/bastion/files/efs-template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      ROLE: "{{ role_name|upper }}"
+      Role: "{{ role_name|lower }}"
+      AZCount: "{{ vpc_az_count }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"
+
+- name: Create BASTION stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-BASTION"
+    template: "roles/bastion/files/template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      ROLE: "{{ role_name|upper }}"
+      Role: "{{ role_name|lower }}"
+      AZCount: "{{ vpc_az_count }}"
+      ImageId: "{{ ami.images[0].image_id }}"
+      InstanceType: "{{ vars[region | replace('-','_') + '_' + 'bastion_instance_type'] | default(bastion_instance_type) }}"
+      WarnHighCpuPercent: "{{ bastion_warn_high_cpu_percent }}"
+      RepoUrl: "{{ source_repo_url }}"
+      Version: "{{ project_version }}"
+      IcingaIp1: "{{ icinga_ip_list[0] }}"
+      IcingaIp2: "{{ icinga_ip_list[1] }}"
+      BastionDnsRole: "{{ bastion_dns_role }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"

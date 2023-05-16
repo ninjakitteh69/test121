@@ -1,0 +1,344 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Application Load Balancer template",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "SERVICE": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Service": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "AZCount": {
+            "Description": "Number of AZs in use.",
+            "Type": "Number"
+        },
+        "HTTPPORT": {
+            "Description": "HTTP port number.",
+            "Type": "Number",
+            "Default": 80
+        },
+        "HTTPSPORT": {
+            "Description": "HTTPS port number.",
+            "Type": "Number",
+            "Default": 443
+        },
+        "CertificateArn": {
+            "Description": "SSL certificate ARN",
+            "Type": "String"
+        },
+        "HasWAF": {
+          "Description": "Set to True if WAF is required",
+          "Type": "String",
+          "Default": "False"
+        },
+        "LogRetentionDays": {
+            "Description": "Number of days the logs will be retained.",
+            "Type": "Number",
+            "Default": 180
+        }
+    },
+
+    "Conditions": {
+        "HasWaf": {"Fn::Equals": [{"Ref": "HasWAF"}, "True"]},
+        "ThreeAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "3"]}
+    },
+
+    "Resources": {
+
+        "SecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Allow HTTP & HTTPS access to ALB.",
+                "VpcId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC"}},
+                "SecurityGroupIngress": [
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "HTTPPORT"}, "ToPort": {"Ref": "HTTPPORT"}, "CidrIp": "0.0.0.0/0"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "HTTPSPORT"}, "ToPort": {"Ref": "HTTPSPORT"}, "CidrIp": "0.0.0.0/0"}
+                ]
+            }
+        },
+
+        "LoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties": {
+                "Name": {"Fn::Sub": "${AWS::StackName}"},
+                "Scheme": "internet-facing",
+                "IpAddressType": "ipv4",
+                "Type": "application",
+                "SecurityGroups": [{"Ref": "SecurityGroup"}],
+                "LoadBalancerAttributes": [
+                    {"Key": "access_logs.s3.enabled", "Value": "true"},
+                    {"Key": "access_logs.s3.bucket", "Value": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-LogsBucket"}}},
+                    {"Key": "access_logs.s3.prefix", "Value": "alb"}
+                ],
+                "SubnetMappings": {"Fn::If": ["ThreeAZStack",
+                    [
+                        {"SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}}},
+                        {"SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic2"}}},
+                        {"SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic3"}}}
+                    ],
+                    [
+                        {"SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}}},
+                        {"SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic2"}}}
+                    ]
+                ]}
+            }
+        },
+
+        "ListenerHTTPS": {
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "LoadBalancerArn": {"Ref": "LoadBalancer"},
+                "Protocol": "HTTPS",
+                "SslPolicy": "ELBSecurityPolicy-TLS-1-2-Ext-2018-06",
+                "Certificates": [{"CertificateArn": {"Ref": "CertificateArn"}}],
+                "Port": {"Ref": "HTTPSPORT"},
+                "DefaultActions": [{
+                    "Type": "fixed-response",
+                    "FixedResponseConfig": {
+                        "ContentType": "text/plain",
+                        "StatusCode": "404",
+                        "MessageBody": "Unknown Page"
+                    }
+                }]
+            }
+        },
+
+        "ListenerHTTP": {
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "LoadBalancerArn": {"Ref": "LoadBalancer"},
+                "Protocol": "HTTP",
+                "Port": {"Ref": "HTTPPORT"},
+                "DefaultActions": [{"Type": "redirect", "RedirectConfig": {
+                    "Protocol": "HTTPS",
+                    "Host": "#{host}",
+                    "Port": "443",
+                    "Path": "/#{path}",
+                    "Query": "#{query}",
+                    "StatusCode": "HTTP_301"
+                }}]
+            }
+        },
+
+        "LogGroupMessagesWaf": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessagesWafCommonRuleSet": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF-CommonRuleSet"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessagesWafKnownBadInputsRuleSet": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF-KnownBadInputsRuleSet"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessagesWafLinuxRuleSet": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF-LinuxRuleSet"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessagesWafAnonymousIpList": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF-AnonymousIpList"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessagesWafBotControlRuleSet": {
+            "Type": "AWS::Logs::LogGroup",
+            "Condition": "HasWaf",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-WAF-BotControlRuleSet"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "WebACL": {
+            "Type": "AWS::WAFv2::WebACL",
+            "Condition": "HasWaf",
+            "Properties": {
+                "Name": {"Fn::Sub": "${AWS::StackName}-WAF"},
+                "Scope": "REGIONAL",
+                "Description": {"Fn::Sub": "Waf rules for ${AWS::StackName}"},
+                "DefaultAction": {
+                    "Allow": {}
+                },
+                "VisibilityConfig": {
+                    "CloudWatchMetricsEnabled": true,
+                    "MetricName": {"Ref": "LogGroupMessagesWaf"},
+                    "SampledRequestsEnabled": true
+                },
+                "Rules": [
+                    {
+                        "Name": "AWSManagedRulesCommonRuleSet",
+                        "Priority": 0,
+                        "VisibilityConfig": {
+                            "CloudWatchMetricsEnabled": true,
+                            "MetricName": {"Ref": "LogGroupMessagesWafCommonRuleSet"},
+                            "SampledRequestsEnabled": true
+                        },
+                        "OverrideAction": {
+                            "Count": {}
+                        },
+                        "Statement": {
+                            "ManagedRuleGroupStatement": {
+                                "VendorName": "AWS",
+                                "Name": "AWSManagedRulesCommonRuleSet",
+                                "ExcludedRules": []
+                            }
+                        }
+                    },
+                    {
+                        "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+                        "Priority": 1,
+                        "VisibilityConfig": {
+                            "CloudWatchMetricsEnabled": true,
+                            "MetricName": {"Ref": "LogGroupMessagesWafKnownBadInputsRuleSet"},
+                            "SampledRequestsEnabled": true
+                        },
+                        "OverrideAction": {
+                            "Count": {}
+                        },
+                        "Statement": {
+                            "ManagedRuleGroupStatement": {
+                                "VendorName": "AWS",
+                                "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+                                "ExcludedRules": []
+                            }
+                        }
+                    },
+                    {
+                        "Name": "AWSManagedRulesLinuxRuleSet",
+                        "Priority": 3,
+                        "VisibilityConfig": {
+                            "CloudWatchMetricsEnabled": true,
+                            "MetricName": {"Ref": "LogGroupMessagesWafLinuxRuleSet"},
+                            "SampledRequestsEnabled": true
+                        },
+                        "OverrideAction": {
+                            "Count": {}
+                        },
+                        "Statement": {
+                            "ManagedRuleGroupStatement": {
+                                "VendorName": "AWS",
+                                "Name": "AWSManagedRulesLinuxRuleSet",
+                                "ExcludedRules": []
+                            }
+                        }
+                    },
+                    {
+                        "Name": "AWSManagedRulesAnonymousIpList",
+                        "Priority": 5,
+                        "VisibilityConfig": {
+                            "CloudWatchMetricsEnabled": true,
+                            "MetricName": {"Ref": "LogGroupMessagesWafAnonymousIpList"},
+                            "SampledRequestsEnabled": true
+                        },
+                        "OverrideAction": {
+                            "Count": {}
+                        },
+                        "Statement": {
+                            "ManagedRuleGroupStatement": {
+                                "VendorName": "AWS",
+                                "Name": "AWSManagedRulesAnonymousIpList",
+                                "ExcludedRules": []
+                            }
+                        }
+                    },
+                    {
+                        "Name": "AWSManagedRulesBotControlRuleSet",
+                        "Priority": 6,
+                        "VisibilityConfig": {
+                            "CloudWatchMetricsEnabled": true,
+                            "MetricName": {"Ref": "LogGroupMessagesWafBotControlRuleSet"},
+                            "SampledRequestsEnabled": true
+                        },
+                        "OverrideAction": {
+                            "Count": {}
+                        },
+                        "Statement": {
+                            "ManagedRuleGroupStatement": {
+                                "VendorName": "AWS",
+                                "Name": "AWSManagedRulesBotControlRuleSet",
+                                "ExcludedRules": []
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+
+        "WebACLAssociation": {
+            "Type": "AWS::WAFv2::WebACLAssociation",
+            "Condition": "HasWaf",
+            "Properties": {
+                "WebACLArn": {"Fn::GetAtt": ["WebACL", "Arn"]},
+                "ResourceArn": {"Ref": "LoadBalancer"}
+            }
+        }
+     },
+
+    "Outputs": {
+        "SecurityGroup": {
+            "Description": "ARN SecurityGroup",
+            "Value": {"Ref": "SecurityGroup"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-SecurityGroup"}}
+        },
+        "HttpListenerArn": {
+            "Description": "ARN of HTTP listner",
+            "Value": {"Ref": "ListenerHTTP"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-HttpListenerArn"}}
+        },
+        "HttpsListenerArn": {
+            "Description": "ARN of HTTPS listner",
+            "Value": {"Ref": "ListenerHTTPS"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-HttpsListenerArn"}}
+        }
+    }
+}

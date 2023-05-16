@@ -1,0 +1,447 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Bastion behind auto-scaling group to ensure high availability.",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "ROLE": {
+            "Description": "Role name.",
+            "Type": "String"
+        },
+        "Role": {
+            "Description": "Role name (lower case).",
+            "Type": "String"
+        },
+        "AZCount": {
+            "Description": "Number of AZs in use.",
+            "Type": "Number"
+        },
+        "SSHPORT": {
+            "Description": "SSH port to access the server.",
+            "Type": "Number",
+            "Default": 22
+        },
+        "ImageId": {
+            "Description": "Server AMI.",
+            "Type": "AWS::EC2::Image::Id"
+        },
+        "InstanceType": {
+            "Description": "Server instance type.",
+            "Type": "String"
+        },
+        "RepoUrl": {
+            "Description": "URL of the git repo used to clone the required files",
+            "Type": "String",
+            "Default": ""
+        },
+        "Version": {
+            "Description": "Project Version.",
+            "Type": "String",
+            "Default": ""
+        },
+        "WarnHighCpuPercent": {
+            "Description": "Warn when CPU increases above this.",
+            "Type": "String"
+        },
+        "IcingaIp1": {
+            "Description": "Icinga ip 1",
+            "Type": "String"
+        },
+        "IcingaIp2": {
+            "Description": "Icinga ip 2",
+            "Type": "String"
+        },
+        "LogRetentionDays": {
+            "Description": "Number of days the logs will be retained.",
+            "Type": "Number",
+            "Default": 180
+        },
+        "BastionDnsRole": {
+            "Description": "IAM Role to Update Bastion DNS",
+            "Type": "String"
+        }
+    },
+
+    "Conditions": {
+        "TwoAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "2"]},
+        "ThreeAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "3"]}
+    },
+
+    "Resources": {
+        "ElasticIp": {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+                "Domain" : "vpc",
+                "Tags": [
+                    {"Key": "Name", "Value": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-BASTION"}},
+                    {"Key": "project", "Value": {"Ref": "PROJECT"}},
+                    {"Key": "server", "Value": "Bastion"}
+                ]
+
+            }
+        },
+
+        "InstanceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "Path": "/",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Principal": {"Service": ["ec2.amazonaws.com"]},
+                            "Action": ["sts:AssumeRole"],
+                            "Effect": "Allow"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "standard-instance-permissions",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["sns:Publish"],
+                                    "Resource": [
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}},
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ssm:GetParameter","ssm:GetParameters"],
+                                    "Resource": {"Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Project}-${Environment}-*"}
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:ListBucket","s3:GetObject"],
+                                    "Resource": [
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucketArn"}},
+                                        {"Fn::Join": ["", [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucketArn"}},"/*"]]}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["logs:CreateLogStream","logs:PutLogEvents"],
+                                    "Resource": {"Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AWS::StackName}-*:*"}
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["cloudwatch:PutMetricData"],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:GetObject"],
+                                    "Resource": "arn:aws:s3:::binu-internal/authorized_users/*"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "bastion-instance-permissions",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:AssociateAddress"],
+                                    "Resource": [
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:elastic-ip/"}, {"Fn::GetAtt": ["ElasticIp", "AllocationId"]}]]},
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:network-interface/*"}]]},
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:instance/*"}]]}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:DescribeInstances"],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ssm:GetParameter","ssm:GetParameters"],
+                                    "Resource": [
+                                        {"Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/monitoring-${Environment}-bastion-credentials"},
+                                        {"Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/monitoring-${Environment}-icinga-config"},
+                                        {"Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/monitoring-${Environment}-opentelemetry-config"}
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "route53:GetHostedZone",
+                                        "route53:ListHostedZones",
+                                        "route53:GetChange",
+                                        "route53:ListHostedZonesByName"
+                                    ],
+                                    "Resource": "*",
+                                    "Effect": "Allow"
+                                },
+                                {
+                                    "Action": [
+                                        "route53:ChangeResourceRecordSets",
+                                        "route53:ListResourceRecordSets"
+                                    ],
+                                    "Resource": [
+                                        "arn:aws:route53:::hostedzone/Z0203255YIDB085ZN46Q",
+                                        "arn:aws:route53:::hostedzone/Z02251521ZZ9EIMTR3FXL",
+                                        "arn:aws:route53:::hostedzone/Z069895639JPKO4PLGV4X"
+                                    ],
+                                    "Effect": "Allow"
+                                },
+                                {
+                                    "Action": [
+                                        "servicediscovery:RegisterInstance"
+                                    ],
+                                    "Resource": [
+                                        {"Fn::Join": ["/",[{"Fn::Sub": "arn:aws:servicediscovery:${AWS::Region}:${AWS::AccountId}:service"}, {"Ref": "ServiceDiscoveryService"}]]}
+                                    ],
+                                    "Effect": "Allow"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "sts:AssumeRole",
+                                    "Resource": {"Ref": "BastionDnsRole"}
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+
+        "InstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [{"Ref": "InstanceRole"}]
+            }
+        },
+
+        "SecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Allow SSH access to bastion host.",
+                "VpcId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC"}},
+                "SecurityGroupIngress": [
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "SSHPORT"}, "ToPort": {"Ref": "SSHPORT"}, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Allow internal VPC traffic"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "SSHPORT"}, "ToPort": {"Ref": "SSHPORT"}, "CidrIp": "52.213.54.39/32", "Description": "VPN Server (eu-west-1)"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "SSHPORT"}, "ToPort": {"Ref": "SSHPORT"}, "CidrIp": "13.244.230.58/32", "Description": "VPN Server (af-south-1)"},
+                    {"IpProtocol": "tcp", "FromPort": 5665, "ToPort": 5666, "CidrIp": {"Ref": "IcingaIp1"}, "Description": "Allow icinga ip"},
+                    {"IpProtocol": "tcp", "FromPort": 5665, "ToPort": 5666, "CidrIp": {"Ref": "IcingaIp2"}, "Description": "Allow icinga ip"},
+                    {"IpProtocol": "tcp", "FromPort": 4317, "ToPort": 4317, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Allow OPENTELEMETRY traffic from internal VPC ips"}
+                ]
+            }
+        },
+
+        "LaunchTemplate": {
+            "Type": "AWS::EC2::LaunchTemplate",
+            "Properties": {
+                "LaunchTemplateName": {"Ref": "AWS::StackName"},
+                "LaunchTemplateData": {
+                    "MetadataOptions": {
+                        "HttpTokens": "required"
+                    },
+                    "ImageId": {"Ref": "ImageId"},
+                    "InstanceType": {"Ref": "InstanceType"},
+                    "IamInstanceProfile": {"Name": {"Ref": "InstanceProfile"}},
+                    "NetworkInterfaces": [{
+                        "DeviceIndex": 0,
+                        "AssociatePublicIpAddress": true,
+                        "Groups": [{"Ref": "SecurityGroup"}]
+                    }],
+                    "TagSpecifications": [
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {"Key": "Name", "Value": {"Ref": "AWS::StackName"}},
+                                {"Key": "project", "Value": {"Ref": "Project"}},
+                                {"Key": "environment", "Value": {"Ref": "Environment"}},
+                                {"Key": "service", "Value": "bastion"}
+                            ]
+                        },
+                        {
+                            "ResourceType": "volume",
+                            "Tags": [
+                                {"Key": "Name", "Value": {"Ref": "AWS::StackName"}},
+                                {"Key": "project", "Value": {"Ref": "Project"}},
+                                {"Key": "environment", "Value": {"Ref": "Environment"}},
+                                {"Key": "service", "Value": "bastion"}
+                            ]
+                        }
+                    ],
+                    "UserData": {"Fn::Base64": {"Fn::Join": ["\n", [
+                        {"Fn::Join": ["=",["export AWS_STACK", {"Ref": "AWS::StackName"}]]},
+                        {"Fn::Join": ["=",["export APP_PROJECT", {"Ref": "PROJECT"}]]},
+                        {"Fn::Join": ["=",["export APP_ENVIRONMENT", {"Ref": "ENVIRONMENT"}]]},
+                        {"Fn::Join": ["=",["export APP_ROLE", {"Ref": "ROLE"}]]},
+                        {"Fn::Join": ["=",["export AWS_CRITICAL_EVENTS_TOPIC", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]]},
+                        {"Fn::Join": ["=",["export AWS_GENERAL_EVENTS_TOPIC", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]]},
+                        {"Fn::Join": ["=",["export AWS_SERVICE_DISCOVERY_NAMESPACE", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-ServiceDiscoveryNamespace"}}]]},
+                        {"Fn::Join": ["=",["export AWS_SERVICE_DISCOVERY_SERVICE", {"Ref": "ServiceDiscoveryService"}]]},
+                        {"Fn::Join": ["=",["export APP_BASTION_DNS_ROLE", {"Ref": "BastionDnsRole"}]]},
+                        {"Fn::Join": ["=",["export AWS_PROJECT_BUCKET", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucket"}}]]},
+                        {"Fn::Join": ["=",["export AWS_EIP_ID", {"Fn::GetAtt": ["ElasticIp","AllocationId"]}]]},
+                        {"Fn::Join": ["=",["export APP_REPO_URL", {"Ref": "RepoUrl"}]]},
+                        {"Fn::Join": ["=",["export APP_EFS_ID", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-BASTIONEFS-EFSID"}}]]}
+                    ]]}}
+                }
+            }
+        },
+
+        "LogGroupCloudwatchAgent": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-amazon-cloudwatch-agent.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessages": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/messages"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupSecure": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/secure"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupInstanceInit": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/binu/instance_init"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupAudit": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/audit/audit.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupAide": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/aide/aide.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "AutoScalingGroup": {
+            "UpdatePolicy":{
+                "AutoScalingReplacingUpdate":{
+                  "WillReplace":true
+                }
+            },
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "LaunchTemplate": {
+                    "LaunchTemplateId": {"Ref": "LaunchTemplate"},
+                    "Version": {"Fn::GetAtt": ["LaunchTemplate", "LatestVersionNumber"]}
+                },
+                "VPCZoneIdentifier": {"Fn::If": ["ThreeAZStack",
+                    [
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}},
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic2"}},
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic3"}}
+                    ],
+                    {"Fn::If": ["TwoAZStack",
+                        [
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}},
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic2"}}
+                        ],
+                        [
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}}
+                        ]
+                    ]}
+                ]},
+                "MinSize": "1",
+                "MaxSize": "1",
+                "HealthCheckGracePeriod": 120,
+                "TerminationPolicies": ["ClosestToNextInstanceHour", "OldestInstance"],
+                "NotificationConfigurations": [{
+                    "TopicARN": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}},
+                    "NotificationTypes": ["autoscaling:EC2_INSTANCE_LAUNCH_ERROR", "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+                }]
+            }
+        },
+
+        "WarnHighCpu": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Warn when CPU utilisation above ${WarnHighCpuPercent} for 5 minutes."},
+                "Namespace": "AWS/EC2",
+                "MetricName": "CPUUtilization",
+                "Unit": "Percent",
+                "Dimensions": [{"Name": "AutoScalingGroupName", "Value": {"Ref": "AutoScalingGroup"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 1,
+                "Threshold": {"Ref": "WarnHighCpuPercent"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "ServiceDiscoveryService": {
+            "Type" : "AWS::ServiceDiscovery::Service",
+            "Properties" : {
+                "Description" : "Bastion Internal DNS",
+                "DnsConfig" : {
+                    "DnsRecords" : [{ "TTL" : 300, "Type" : "A" }],
+                    "NamespaceId" : {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-ServiceDiscoveryNamespace"}}
+                },
+                "Name" : "bastion"
+              }
+        }
+    },
+
+    "Outputs": {
+        "SSHPORT": {"Description": "Bastion SSH Port", "Value": {"Ref": "SSHPORT"}},
+        "ElasticIp": {
+            "Description": "Static IP for BASTION",
+            "Value": {"Ref": "ElasticIp"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-ElasticIp"}}
+        },
+        "ServiceDiscoveryService": {
+            "Description": "Service ID for ServiceDiscovery",
+            "Value": {"Ref": "ServiceDiscoveryService"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-ServiceDiscoveryService"}}
+        }
+    }
+}

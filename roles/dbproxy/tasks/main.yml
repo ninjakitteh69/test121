@@ -1,0 +1,47 @@
+---
+- name: Find latest AMI
+  ec2_ami_info:
+    region: "{{ region }}"
+    owners: 415983589830
+    filters:
+      name: "{{ ec2_image }}"
+  register: ami
+
+- fail:
+    msg: "AMI for {{ ec2_image }} not found."
+  when: ami.images[0] is not defined
+
+- name: Create docker stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-{{ Service|upper }}"
+    template: "roles/dbproxy/files/template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      ROLE: "{{ role_name|upper }}"
+      Role: "{{ role_name|lower }}"
+      Service: "{{ Service|lower }}"
+      GrafanaSystestIP: "{{ grafana_systest_ip }}"
+      GrafanaProdIP: "{{ grafana_prod_ip }}"
+      GrafanaNewProdIP: "{{ grafana_new_prod_ip }}"
+      ImageId: "{{ ami.images[0].image_id }}"
+      ProvisionPV: "{{ provision_pv }}"
+      InstanceType: "{{ instance_type }}"
+      MinimumInstances: "{{ minimum_instances }}"
+      MaximumInstances: "{{ maximum_instances }}"
+      AlarmHighCpuPercent: "{{ alarm_high_cpu_percent }}"
+      WarnHighCpuPercent: "{{ warn_high_cpu_percent }}"
+      PvMount: "{{ pv_mount }}"
+      FwPortsInput: "{{ fw_ports_input }}"
+      FwPortsOutput: "{{ fw_ports_output }}"
+      DockerImage: "{{ ecr_image }}"
+      Version: "{{ project_version }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"
+      service: "{{ Service|lower }}"
+      version: "{{ project_version }}"

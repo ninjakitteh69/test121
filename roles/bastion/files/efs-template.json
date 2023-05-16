@@ -1,0 +1,150 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "EFS Filesystem for bastions",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "ROLE": {
+            "Description": "Role name.",
+            "Type": "String"
+        },
+        "Role": {
+            "Description": "Role name (lower case).",
+            "Type": "String"
+        },
+        "AZCount": {
+            "Description": "Number of AZs in use.",
+            "Type": "Number"
+        }
+    },
+
+    "Conditions": {
+        "TwoAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "2"]},
+        "ThreeAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "3"]}
+    },
+
+    "Resources": {
+        "EfsSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": {"Fn::Sub": "${AWS::StackName} security group rules."},
+                "VpcId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC"}},
+                "SecurityGroupIngress": [
+                    {"IpProtocol": "tcp", "FromPort": 2049, "ToPort": 2049, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Local VPC"}
+                ],
+                "Tags": [
+                    {"Key": "Name", "Value": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-EFS-security-group"}}
+                ]
+            }
+        },
+
+        "FileSystemResource": {
+            "Type": "AWS::EFS::FileSystem",
+            "Properties": {
+                "PerformanceMode": "generalPurpose",
+                "Encrypted": true,
+                "FileSystemTags": [
+                    {"Key": "Name", "Value": {"Fn::Sub": "${AWS::StackName}-EFS"}},
+                    {"Key": "project", "Value": {"Ref": "Project"}},
+                    {"Key": "environment", "Value": {"Ref": "Environment"}}
+                ],
+                "BackupPolicy": {
+                    "Status": "ENABLED"
+                    },
+                "KmsKeyId": {
+                    "Fn::GetAtt": [
+                        "key",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "key": {
+            "Type": "AWS::KMS::Key",
+            "Properties": {
+                "KeyPolicy": {
+                    "Version": "2012-10-17",
+                    "Id": "key-default-1",
+                    "Statement": [
+                        {
+                            "Sid": "Allow administration of the key",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:iam::",
+                                            {
+                                                "Ref": "AWS::AccountId"
+                                            },
+                                            ":root"
+                                        ]
+                                    ]
+                                }
+                            },
+                            "Action": [
+                                "kms:*"
+                            ],
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "MountTargetResourceAZ1": {
+            "Type": "AWS::EFS::MountTarget",
+            "Properties": {
+                "FileSystemId": {
+                    "Ref": "FileSystemResource"
+                },
+                "SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}},
+                "SecurityGroups":  [ {"Ref": "EfsSecurityGroup"}]
+            }
+        },
+        "MountTargetResourceAZ2": {
+            "Type": "AWS::EFS::MountTarget",
+            "Properties": {
+                "FileSystemId": {
+                    "Ref": "FileSystemResource"
+                },
+                "SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic2"}},
+                "SecurityGroups":  [ {"Ref": "EfsSecurityGroup"}]
+            }
+        },
+        "MountTargetResourceAZ3": {
+            "Condition": "ThreeAZStack",
+            "Type": "AWS::EFS::MountTarget",
+            "Properties": {
+                "FileSystemId": {
+                    "Ref": "FileSystemResource"
+                },
+                "SubnetId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic3"}},
+                "SecurityGroups":  [ {"Ref": "EfsSecurityGroup"}]
+
+            }
+        }
+    },   
+    "Outputs": {
+        "EFSID": {
+            "Description": "EFS ID for bastion",
+            "Value": {"Fn::Join": [".",[{"Ref": "FileSystemResource"}, {"Fn::Sub": "efs.${AWS::Region}.amazonaws.com"}]]},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-EFSID"}}
+        }
+    }
+}

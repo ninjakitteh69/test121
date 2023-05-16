@@ -1,0 +1,37 @@
+account: "597684347793"
+region: "eu-west-1"
+
+vpc_az_count: 3
+multi_nat: false
+vpc:
+  CIDR: "10.XXX.0.0/16"
+zone_a:
+  public_CIDR: "10.XXX.0.0/20"
+  private_CIDR: "10.XXX.48.0/20"
+  secure_CIDR: "10.XXX.96.0/20"
+zone_b:
+  public_CIDR: "10.XXX.16.0/20"
+  private_CIDR: "10.XXX.64.0/20"
+  secure_CIDR: "10.XXX.112.0/20"
+zone_c:
+  public_CIDR: "10.XXX.32.0/20"
+  private_CIDR: "10.XXX.80.0/20"
+  secure_CIDR: "10.XXX.128.0/20"
+
+db_instance_class: "db.t3.small"
+rds_engine_name: "MySQL"
+rds_engine_version: "8.0.25"
+rds_storage_type: "gp2"
+rds_backup_retention_days: 22
+rds_allocated_storage_gb: 100
+rds_warn_high_cpu_percent: "50"
+rds_alarm_high_cpu_percent: "70"
+rds_warn_disk_usage_percent: 70
+rds_alarm_disk_usage_percent: 80
+rds_warn_low_freeable_memory_bytes: "{{ '20MB'|human_to_bytes }}"
+rds_alarm_low_freeable_memory_bytes: "{{ '10MB'|human_to_bytes }}"
+rds_warn_high_database_connections_count: "4"
+rds_alarm_high_database_connections_count: "8"
+rds_multi_az: false
+
+alb_certificate_arn: "arn:aws:acm:eu-west-1:597684347793:certificate/56c6095d-d20c-471b-8098-960d83eac7b8"

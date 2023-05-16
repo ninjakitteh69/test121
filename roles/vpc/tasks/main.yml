@@ -1,0 +1,27 @@
+- name: Create VPC stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-VPC"
+    template: "roles/vpc/files/template.json"
+    region: "{{ region }}"
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      AZCount: "{{ vpc_az_count }}"
+      ROLE: "{{ role_name|upper }}"
+      Role: "{{ role_name|lower }}"
+      VPCCIDR: "{{ vpc.CIDR }}"
+      AZ1PublicCIDR: "{{ zone_a.public_CIDR }}"
+      AZ1PrivateCIDR: "{{ zone_a.private_CIDR }}"
+      AZ1SecureCIDR: "{{ zone_a.secure_CIDR }}"
+      AZ2PublicCIDR: "{{ zone_b.public_CIDR }}"
+      AZ2PrivateCIDR: "{{ zone_b.private_CIDR }}"
+      AZ2SecureCIDR: "{{ zone_b.secure_CIDR }}"
+      AZ3PublicCIDR: "{{ zone_c.public_CIDR }}"
+      AZ3PrivateCIDR: "{{ zone_c.private_CIDR }}"
+      AZ3SecureCIDR: "{{ zone_c.secure_CIDR }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"

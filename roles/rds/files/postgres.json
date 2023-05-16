@@ -1,0 +1,546 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Transform": "AWS::SecretsManager-2020-07-23",
+    "Description": "template for postgresql RDS instance.",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "SERVICE": {
+            "Description": "Service name (upper case).",
+            "Type": "String"
+        },
+        "Service": {
+            "Description": "Role name (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "AZCount": {
+            "Description": "Number of AZs in use.",
+            "Type": "Number"
+        },
+        "RDSPORT": {
+            "Description": "RDS default port.",
+            "Type": "String",
+            "Default": "5432"
+        },
+        "RDSEngineName": {
+            "Description": "RDS database engine name.",
+            "Type": "String"
+        },
+        "RDSEngineVersion": {
+            "Description": "RDS database engine version.",
+            "Type": "String"
+        },
+        "RDSUserName": {
+            "Description": "RDS MasterUsername.",
+            "Type": "String"
+        },
+        "RDSStorageType": {
+            "Description": "RDS Storage type.",
+            "Type": "String",
+            "Default": "gp2"
+        },
+        "RDSIops": {
+            "Description": "RDS IOPS.",
+            "Type": "Number",
+            "Default": 200
+        },
+        "DBInstanceClass": {
+            "Description": "Instance class to be used for the RDS database.",
+            "Type": "String"
+        },
+        "DBInstanceCount": {
+            "Description": "Number of DBInstance resources to include in the cluster.",
+            "Type": "String"
+        },
+        "SnapshotIdentifier": {
+            "Description": "Snapshot to restore from, blank for new database.",
+            "Type": "String"
+        },
+        "AllocatedStorageGB": {
+            "Description": "Number of GB Storage for RDS.",
+            "Type": "Number"
+        },
+        "MultiAZ": {
+            "Description": "Is database across mupliple availability zones.",
+            "Type": "String"
+        },
+        "BackupRetentionPeriod": {
+            "Description": "Number of days that daily snapshots are kept.",
+            "Type": "Number"
+        },
+        "EnableEnhancedMetrics": {
+            "Description": "Enable Enhanced monitoring for rds instance",
+            "Type": "String"
+        },
+        "EnablePerformanceInsights": {
+            "Description": "Enable RDS performance insights",
+            "Type": "String"
+        },
+        "WarnHighCpuPercent": {
+            "Description": "Warn when CPU increases above this.",
+            "Type": "Number"
+        },
+        "AlarmHighCpuPercent": {
+            "Description": "Alarm when CPU increases above this.",
+            "Type": "Number"
+        },
+        "WarnLowFreeStorageSpaceBytes": {
+            "Description": "Warn when Free Storage Space decreases below this.",
+            "Type": "Number"
+        },
+        "AlarmLowFreeStorageSpaceBytes": {
+            "Description": "Alarm when Free Storage Space decreases below this.",
+            "Type": "Number"
+        },
+        "WarnLowFreeableMemoryBytes": {
+            "Description": "Warn when Freeable Memory decreases below this.",
+            "Type": "Number"
+        },
+        "AlarmLowFreeableMemoryBytes": {
+            "Description": "Alarm when Freeable Memory decreases below this.",
+            "Type": "Number"
+        },
+        "WarnHighDatabaseConnectionsCount": {
+            "Description": "Warn when Database Connection count increases above this.",
+            "Type": "Number"
+        },
+        "AlarmHighDatabaseConnectionsCount": {
+            "Description": "Alarm when Database Connection count increases above this.",
+            "Type": "Number"
+        }
+    },
+
+    "Conditions": {
+        "RestoreFromSnapshot": {"Fn::Not": [{"Fn::Equals": [{"Ref": "SnapshotIdentifier"}, ""]}]},
+        "HasEnhancedMetrics": {"Fn::Not": [{"Fn::Equals": [{"Ref": "EnableEnhancedMetrics"}, "false"]}]},
+        "HasPerformanceInsights": {"Fn::Not": [{"Fn::Equals": [{"Ref": "EnablePerformanceInsights"}, "false"]}]},
+        "ThreeAZStack": {"Fn::Equals": [{"Ref": "AZCount"}, "3"]},
+        "SetStorageIops": {
+            "Fn::Or": [
+                {"Fn::Equals" : [{"Ref" : "RDSStorageType"}, "io1"]},
+                {"Fn::Equals" : [{"Ref" : "RDSStorageType"}, "io2"]}
+            ]
+        }
+
+    },
+
+    "Resources": {
+
+        "DBSubNetGroup": {
+            "Type": "AWS::RDS::DBSubnetGroup",
+            "Properties": {
+                "DBSubnetGroupDescription": {"Ref": "AWS::StackName"},
+                "SubnetIds": {"Fn::If": ["ThreeAZStack",
+                    [
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate1"}},
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate2"}},
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate3"}}
+                    ],
+                    [
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate1"}},
+                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate2"}}
+                    ]
+                ]}
+            }
+        },
+
+        "SecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": {"Fn::Sub": "${AWS::StackName} RDS security group rules."},
+                "VpcId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC"}},
+                "SecurityGroupIngress": [
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "RDSPORT"}, "ToPort": {"Ref": "RDSPORT"}, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Local VPC"}
+                ],
+                "Tags": [
+                    {"Key": "Name", "Value": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-rds-security-group"}}
+                ]
+            }
+        },
+
+        "RDSKey": {
+            "Type": "AWS::KMS::Key",
+            "Properties": {
+                "Description": {"Fn::Sub": "RDS CMK for ${AWS::StackName}${RDSEngineName}RDS"},
+                "Enabled": true,
+                "KeyPolicy": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "Enable IAM User Permissions",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": {"Fn::Sub": "arn:aws:iam::${AWS::AccountId}:root"}
+                            },
+                            "Action": "kms:*",
+                            "Resource": "*"
+                        },
+                        {
+                            "Sid": "Allow access for Key Administrators",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": [
+                                    {"Fn::Sub": "arn:aws:iam::${AWS::AccountId}:role/CrossAccountAdminAccess"}
+                                ]
+                            },
+                            "Action": [
+                                "kms:Create*",
+                                "kms:Describe*",
+                                "kms:Enable*",
+                                "kms:List*",
+                                "kms:Put*",
+                                "kms:Update*",
+                                "kms:Revoke*",
+                                "kms:Disable*",
+                                "kms:Get*",
+                                "kms:Delete*",
+                                "kms:TagResource",
+                                "kms:UntagResource",
+                                "kms:ScheduleKeyDeletion",
+                                "kms:CancelKeyDeletion"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Sid": "Allow RDS access",
+                            "Effect": "Allow",
+                            "Principal": {
+                              "Service": "rds.amazonaws.com"
+                            },
+                            "Action": "kms:DescribeKey",
+                            "Resource": "*"
+                        },
+                        {
+                            "Sid": "Enable RDS Encrypt Permissions",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "rds.amazonaws.com"},
+                            "Action": "kms:GenerateDataKey*",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+
+        "RDSKeyAlias": {
+            "Type": "AWS::KMS::Alias",
+            "Properties": {
+                "TargetKeyId": {"Ref": "RDSKey"},
+                "AliasName":  {"Fn::Sub": "alias/${AWS::StackName}${RDSEngineName}RDS"}
+            }
+        },
+
+        "MasterPasswordSecret": {
+            "Type": "AWS::SecretsManager::Secret",
+            "Properties": {
+                "Name": {"Ref": "AWS::StackName"},
+                "Description": {"Fn::Sub": "RDS Master User Password for ${AWS::StackName}"},
+                "KmsKeyId": {"Ref": "RDSKey"},
+                "GenerateSecretString": {
+                    "SecretStringTemplate": {
+                        "Fn::Sub": [
+                            "{\"username\": \"${username}\"}",
+                            {
+                                "username": { "Ref": "RDSUserName" }
+                            }
+                        ]
+                    },
+                    "GenerateStringKey": "password",
+                    "PasswordLength": 16,
+                    "ExcludeCharacters": "\"@/\\"
+                }
+            }
+        },
+
+        "RDSRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "Path": "/",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Principal": {"Service": ["monitoring.rds.amazonaws.com"]},
+                            "Action": ["sts:AssumeRole"],
+                            "Effect": "Allow"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns":["arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"]
+            }
+        },
+
+        "RDSDBParameterGroup": {
+            "Type": "AWS::RDS::DBParameterGroup",
+            "Properties": {
+                "Description": "RDS Postgresql Parameter Group.",
+                "Family": "postgres14"
+
+            }
+        },
+
+        "DBInstance": {
+            "Type": "AWS::RDS::DBInstance",
+            "DeletionPolicy": "Snapshot",
+            "Properties": {
+                "Engine": {"Ref": "RDSEngineName"},
+                "EngineVersion":  {"Ref": "RDSEngineVersion"},
+                "EnablePerformanceInsights": {
+                    "Fn::If" : [
+                        "HasPerformanceInsights",
+                        true,
+                        {"Ref" : "AWS::NoValue"}
+                    ]
+                },
+                "PerformanceInsightsRetentionPeriod": {
+                    "Fn::If" : [
+                        "HasPerformanceInsights",
+                        7,
+                        {"Ref" : "AWS::NoValue"}
+                    ]
+                },
+                "DBInstanceClass": {"Ref": "DBInstanceClass"},
+                "DBSubnetGroupName": {"Ref": "DBSubNetGroup"},
+                "DBSnapshotIdentifier": {"Fn::If": ["RestoreFromSnapshot", {"Ref": "SnapshotIdentifier"}, {"Ref": "AWS::NoValue"}]},
+                "AllocatedStorage": {"Ref": "AllocatedStorageGB"},
+                "StorageType":  {"Ref": "RDSStorageType"},
+                "StorageEncrypted": true,
+                "KmsKeyId": {"Ref": "RDSKey"},
+                "MultiAZ": {"Ref": "MultiAZ"},
+                "MasterUsername": {"Fn::If": ["RestoreFromSnapshot",
+                    {"Ref": "AWS::NoValue"},
+                    {"Fn::Sub": "{{resolve:secretsmanager:${MasterPasswordSecret}::username}}"}
+                ]},
+                "MasterUserPassword": {"Fn::Sub": "{{resolve:secretsmanager:${MasterPasswordSecret}::password}}"},
+                "VPCSecurityGroups": [{"Ref": "SecurityGroup"}],
+                "PubliclyAccessible": false,
+                "MonitoringInterval": { "Fn::If" : [ "HasEnhancedMetrics", 1, 0] },
+                "MonitoringRoleArn": {
+                    "Fn::If" : [
+                        "HasEnhancedMetrics",
+                        {"Fn::GetAtt": ["RDSRole", "Arn"] },
+                        {"Ref" : "AWS::NoValue"}
+                    ]
+                },
+                "AllowMajorVersionUpgrade": true,
+                "BackupRetentionPeriod": {"Ref": "BackupRetentionPeriod"},
+                "Iops": {
+                    "Fn::If" : [
+                        "SetStorageIops",
+                        {"Ref" : "RDSIops"},
+                        {"Ref" : "AWS::NoValue"}
+                    ]
+                },
+                "DBParameterGroupName": { "Ref": "RDSDBParameterGroup" }
+            }
+        },
+
+        "MasterPasswordInstanceAttachment": {
+            "Type": "AWS::SecretsManager::SecretTargetAttachment",
+            "Properties": {
+                "SecretId": {"Ref":"MasterPasswordSecret"},
+                "TargetType":"AWS::RDS::DBInstance",
+                "TargetId": {"Ref":"DBInstance"}
+            }
+        },
+
+         "MasterPasswordRotationSchedule": {
+            "Type": "AWS::SecretsManager::RotationSchedule",
+            "DependsOn": "MasterPasswordInstanceAttachment",
+            "Properties": {
+                "SecretId": {"Ref":"MasterPasswordSecret"},
+                "RotationRules": {"AutomaticallyAfterDays":7},
+                "HostedRotationLambda": {
+                    "RotationLambdaName": {"Fn::Sub": "${AWS::StackName}-KeyRotation"},
+                    "RotationType": "PostgreSQLSingleUser",
+                    "VpcSecurityGroupIds": {"Ref": "SecurityGroup"},
+                    "VpcSubnetIds": {"Fn::If": ["ThreeAZStack",
+                        {"Fn::Join": [",",[
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate1"}},
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate2"}},
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate3"}}
+                        ]]},
+                        {"Fn::Join": [",",[
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate1"}},
+                            {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPrivate2"}}
+                        ]]}
+                    ]}
+                }
+            }
+        },
+
+        "WarnHighCpu": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Warn when CPU utilisation above ${WarnHighCpuPercent} for 5 minutes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "CPUUtilization",
+                "Unit": "Percent",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "WarnHighCpuPercent"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "AlarmHighCpu": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Alarm when CPU utilisation above ${AlarmHighCpuPercent} for 5 minutes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "CPUUtilization",
+                "Unit": "Percent",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "AlarmHighCpuPercent"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]
+            }
+        },
+
+        "WarnLowFreeStorageSpace": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Free storage space below ${WarnLowFreeStorageSpaceBytes} bytes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "FreeStorageSpace",
+                "Unit": "Bytes",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "WarnLowFreeStorageSpaceBytes"},
+                "ComparisonOperator": "LessThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "AlarmLowFreeStorageSpace": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Free storage space below ${AlarmLowFreeStorageSpaceBytes} bytes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "FreeStorageSpace",
+                "Unit": "Bytes",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "AlarmLowFreeStorageSpaceBytes"},
+                "ComparisonOperator": "LessThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]
+            }
+        },
+
+        "WarnLowFreeableMemory": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Freeable memory below ${WarnLowFreeableMemoryBytes} bytes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "FreeableMemory",
+                "Unit": "Bytes",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "WarnLowFreeableMemoryBytes"},
+                "ComparisonOperator": "LessThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "AlarmLowFreeableMemory": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Freeable memory below ${AlarmLowFreeableMemoryBytes} bytes."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "FreeableMemory",
+                "Unit": "Bytes",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "AlarmLowFreeableMemoryBytes"},
+                "ComparisonOperator": "LessThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]
+            }
+        },
+
+        "WarnHighDatabaseConnections": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "DB connection count above ${WarnHighDatabaseConnectionsCount}."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "DatabaseConnections",
+                "Unit": "Count",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "WarnHighDatabaseConnectionsCount"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "AlarmHighDatabaseConnections": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "DB connection count above ${AlarmHighDatabaseConnectionsCount}."},
+                "Namespace": "AWS/RDS",
+                "MetricName": "DatabaseConnections",
+                "Unit": "Count",
+                "Dimensions": [{"Name": "DBInstanceIdentifier", "Value": {"Ref": "DBInstance"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 3,
+                "Threshold": {"Ref": "AlarmHighDatabaseConnectionsCount"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]
+            }
+        }
+    },
+
+    "Outputs": {
+        "DBInstance": {
+            "Description": "DBInstance Name",
+            "Value": {"Ref": "DBInstance"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-DBInstance"}}
+        },
+        "DBInstanceEndpointAddress": {
+            "Description": "DBInstance Endpoint Address",
+            "Value": {"Fn::GetAtt": ["DBInstance", "Endpoint.Address"]},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-DBInstanceEndpointAddress"}}
+        },
+        "DBInstanceEndpointPort": {
+            "Description": "DBInstance Endpoint Port",
+            "Value": {"Fn::GetAtt": ["DBInstance", "Endpoint.Port"]},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-DBInstanceEndpointPort"}}
+        },
+        "MasterPasswordSecretARN": {
+            "Description": "MasterPasswordSecret ARN.",
+            "Value": {"Ref": "MasterPasswordSecret"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-MasterPasswordSecretARN"}}
+        }
+    }
+}

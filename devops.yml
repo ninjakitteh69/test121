@@ -1,0 +1,12 @@
+owner: devops
+project: reference # change this to project specific name
+service: infrastructure
+notifications: alex.niehaus@datafr.ee
+referenceInfrastructure:
+  version: main
+deploy:
+  deployOnCommit: true
+  deployScript: deploy.sh
+services:
+  - repository: devops-reference-ecs # Example of a service to add with matching tag
+    versionTag: 0.0.1

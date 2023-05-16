@@ -1,0 +1,12 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "vars/{{ env|lower }}.yml"
+
+  roles:
+    - { role: statics, tags: 'statics' }
+    - { role: vpc, tags: 'vpc' }
+    - { role: rds, tags: 'rds' }
+    - { role: alb, tags: 'alb' }
+    - { role: bastion, tags: 'bastion' }

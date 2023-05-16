@@ -1,0 +1,42 @@
+- name: Calculate RDS Alarm Thresholds
+  set_fact:
+    rds_warn_bytes: "{{ ((rds_allocated_storage_gb * 1073741824)|float) - ((rds_allocated_storage_gb * 1073741824)|float) * (rds_warn_disk_usage_percent / 100) }}"
+    rds_alarm_bytes: "{{ ((rds_allocated_storage_gb * 1073741824)|float) - ((rds_allocated_storage_gb * 1073741824)|float) * (rds_alarm_disk_usage_percent / 100) }}"
+
+- name: Create RDS stack
+  cloudformation:
+    state: "present"
+    stack_name: "{{ project|upper }}-{{ env|upper }}-RDS"
+    template: "roles/rds/files/{{ rds_engine_name|lower }}.json"
+    region: "{{ region }}"
+    capabilities: ["CAPABILITY_IAM","CAPABILITY_NAMED_IAM","CAPABILITY_AUTO_EXPAND"]
+    template_parameters:
+      PROJECT: "{{ project|upper }}"
+      Project: "{{ project|lower }}"
+      SERVICE: "{{ role_name|upper }}"
+      Service: "{{ role_name|lower }}"
+      ENVIRONMENT: "{{ env|upper }}"
+      Environment: "{{ env|lower }}"
+      AZCount: "{{ vpc_az_count }}"
+      AllocatedStorageGB: "{{ rds_allocated_storage_gb }}"
+      MultiAZ: "{{ rds_multi_az }}"
+      DBInstanceClass: "{{ rds_db_instance_class }}"
+      DBInstanceCount: "{{ rds_db_instance_count }}"
+      SnapshotIdentifier: "{{ rds_snapshot_identifier }}"
+      BackupRetentionPeriod: "{{ rds_backup_retention_period }}"
+      EnableEnhancedMetrics: "{{ rds_enable_enhanced_metrics }}"
+      EnablePerformanceInsights: "{{ rds_enable_performance_insights }}"
+      WarnHighCpuPercent: "{{ rds_warn_high_cpu_percent }}"
+      AlarmHighCpuPercent: "{{ rds_alarm_high_cpu_percent }}"
+      WarnLowFreeStorageSpaceBytes: "{{ rds_warn_bytes }}"
+      AlarmLowFreeStorageSpaceBytes: "{{ rds_alarm_bytes }}"
+      WarnLowFreeableMemoryBytes: "{{ rds_warn_low_freeable_memory_bytes }}"
+      AlarmLowFreeableMemoryBytes: "{{ rds_alarm_low_freeable_memory_bytes }}"
+      WarnHighDatabaseConnectionsCount: "{{ rds_warn_high_database_connections_count }}"
+      AlarmHighDatabaseConnectionsCount: "{{ rds_alarm_high_database_connections_count }}"
+      RDSEngineName: "{{ rds_engine_name }}"
+      RDSEngineVersion: "{{ rds_engine_version }}"
+      RDSUserName: "{{ rds_user_name }}"
+    tags:
+      project: "{{ project|lower }}"
+      environment: "{{ env|lower }}"

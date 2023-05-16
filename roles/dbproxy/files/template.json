@@ -1,0 +1,461 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Docker template using ASG",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        },
+        "ROLE": {
+            "Description": "Project Role.",
+            "Type": "String"
+        },
+        "Role": {
+            "Description": "Project Role (lower case).",
+            "Type": "String"
+        },
+        "Service": {
+            "Description": "Service running on this stack.",
+            "Type": "String"
+        },
+        "SSHPORT": {
+            "Description": "SSH port to access the server.",
+            "Type": "Number",
+            "Default": 22
+        },
+        "PGSQLPORT": {
+            "Description": "PGSQL port to access the server.",
+            "Type": "Number",
+            "Default": 5432
+        },
+        "GrafanaSystestIP": {
+            "Description": "Grafana access locked by IP",
+            "Type": "String"
+        },
+        "GrafanaProdIP": {
+            "Description": "Grafana access locked by IP",
+            "Type": "String"
+        },
+        "GrafanaNewProdIP": {
+            "Description": "Grafana access locked by IP",
+            "Type": "String"
+        },
+        "ImageId": {
+            "Description": "Server AMI.",
+            "Type": "String"
+        },
+        "ProvisionPV":{
+            "Description": "Add Persistent EBS Volume to instance",
+            "Type": "String"
+        },
+        "InstanceType": {
+            "Description": "Server instance type.",
+            "Type": "String"
+        },
+        "LogRetentionDays": {
+            "Description": "Number of days the logs will be retained.",
+            "Type": "Number",
+            "Default": 180
+        },
+        "MinimumInstances": {
+            "Description": "Minimum Instances to spin up (max 1 if using PV)",
+            "Type": "Number"
+        },
+        "MaximumInstances": {
+            "Description": "Maximum Instances to spin up (max 1 if using PV)",
+            "Type": "Number"
+        },
+        "AlarmHighCpuPercent": {
+            "Description": "Alarm when CPU increases above this.",
+            "Type": "String"
+        },
+        "WarnHighCpuPercent": {
+            "Description": "Warn when CPU increases above this.",
+            "Type": "String"
+        },
+        "PvMount": {
+            "Description": "The mount point for the persistent volume (Defaults to /data)",
+            "Type": "String",
+            "Default": "/data"
+        },
+        "FwPortsInput": {
+            "Description": "Comma seperated list of ports to open in iptables",
+            "Type": "String"
+        },
+        "FwPortsOutput": {
+            "Description": "Comma seperated list of ports to open in iptables",
+            "Type": "String"
+        },
+        "DockerImage": {
+            "Description": "Docker Image to use on the instance",
+            "Type": "String"
+        },
+        "Version": {
+            "Description": "the version of the git tag to use for cloning",
+            "Type": "String"
+        }
+    },
+
+    "Conditions": {
+        "PVCondition": {"Fn::Equals": [{"Ref": "ProvisionPV"}, "true"]}
+    },
+
+    "Resources": {
+
+        "StaticIP": {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+                "Domain" : "vpc",
+                "Tags": [
+                    {"Key": "Name", "Value": {"Fn::Sub": "${PROJECT}-${Environment}-${Service}"}},
+                    {"Key": "project", "Value": {"Ref": "PROJECT"}},
+                    {"Key": "service", "Value": {"Ref": "Service"}},
+                    {"Key": "licensee", "Value": {"Ref": "Project"}}
+                ]
+
+            }
+        },
+
+        "InstanceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "Path": "/",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Principal": {"Service": ["ec2.amazonaws.com"]},
+                            "Action": ["sts:AssumeRole"],
+                            "Effect": "Allow"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "standard-instance-permissions",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["sns:Publish"],
+                                    "Resource": [
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}},
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ssm:GetParameter","ssm:GetParameters"],
+                                    "Resource": {"Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Project}-${Environment}-*"}
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:ListBucket","s3:GetObject"],
+                                    "Resource": [
+                                        {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucketArn"}},
+                                        {"Fn::Join": ["", [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucketArn"}},"/*"]]}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["logs:CreateLogStream","logs:PutLogEvents"],
+                                    "Resource": {"Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AWS::StackName}-*:*"}
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["cloudwatch:PutMetricData"],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["s3:GetObject"],
+                                    "Resource": "arn:aws:s3:::binu-internal/authorized_users/*"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "eip-permissions",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:AssociateAddress"],
+                                    "Resource": [
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:elastic-ip/"}, {"Fn::GetAtt": ["StaticIP", "AllocationId"]}]]},
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:network-interface/*"}]]},
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:instance/*"}]]}
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "dockerpermissions",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:AttachVolume", "ec2:DetachVolume"],
+                                    "Resource": [
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:volume/"}, {"Ref": "EBSPersistentVolume"}]]},
+                                        {"Fn::Join": ["", ["arn:aws:ec2:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:instance/*"}]]}
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:DescribeVolumes", "ecr:GetAuthorizationToken"],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ssm:PutParameter",
+                                        "ssm:GetParameter"
+                                    ],
+                                    "Resource": {"Fn::Join": ["", ["arn:aws:ssm:", {"Fn::Sub": "${AWS::Region}:${AWS::AccountId}:parameter/"}, {"Fn::Join": ["-", [{"Ref": "Project"}, {"Ref": "Environment"}, {"Ref": "Service"}, "docker-image"]]}]]}
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ecr:BatchGetImage",
+                                        "ecr:BatchCheckLayerAvailability",
+                                        "ecr:GetDownloadUrlForLayer"
+                                    ],
+                                    "Resource": ["*"]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+
+        "InstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [{"Ref": "InstanceRole"}]
+            }
+        },
+
+        "EBSPersistentVolume": {
+            "Type" : "AWS::EC2::Volume",
+            "Condition": "PVCondition",
+            "Properties" : {
+                "AvailabilityZone" : {"Fn::Join": ["", [{"Ref": "AWS::Region"},"a"]]},
+                "Encrypted" : true,
+                "Size" : 20,
+                "Tags": [
+                    {"Key": "Name", "Value":  {"Fn::Join": ["-", [{"Ref": "AWS::StackName"},"EBSPersistentVolume"]]}},
+                    {"Key": "project", "Value": {"Ref": "PROJECT"}},
+                    {"Key": "service", "Value": {"Ref": "Service"}}
+                ],
+                "VolumeType" : "gp2"
+            }
+        },
+
+        "SecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Allow access to dbproxy by vpc and grafana host.",
+                "VpcId": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC"}},
+                "SecurityGroupIngress": [
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "PGSQLPORT"}, "ToPort": {"Ref": "PGSQLPORT"}, "CidrIp": {"Ref": "GrafanaSystestIP"}, "Description": "Allow traffic from grafana.systest.moya.app"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "PGSQLPORT"}, "ToPort": {"Ref": "PGSQLPORT"}, "CidrIp": {"Ref": "GrafanaProdIP"}, "Description": "Allow traffic from grafana.systest.moyapayd.app:"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "PGSQLPORT"}, "ToPort": {"Ref": "PGSQLPORT"}, "CidrIp": {"Ref": "GrafanaNewProdIP"}, "Description": "Allow traffic from grafana.internal.moya.app"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "PGSQLPORT"}, "ToPort": {"Ref": "PGSQLPORT"}, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Allow internal VPC traffic to PGSQL"},
+                    {"IpProtocol": "tcp", "FromPort": {"Ref": "SSHPORT"}, "ToPort": {"Ref": "SSHPORT"}, "CidrIp": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-CIDR"}}, "Description": "Allow internal VPC traffic to SSH"}
+                ]
+            }
+        },
+
+        "LaunchTemplate": {
+            "Type": "AWS::EC2::LaunchTemplate",
+            "Properties": {
+                "LaunchTemplateName": {"Ref": "AWS::StackName"},
+                "LaunchTemplateData": {
+                    "MetadataOptions": {
+                        "HttpTokens": "required"
+                    },
+                    "ImageId": {"Ref": "ImageId"},
+                    "InstanceType": {"Ref": "InstanceType"},
+                    "IamInstanceProfile": {"Name": {"Ref": "InstanceProfile"}},
+                    "NetworkInterfaces": [
+                        {
+                            "DeviceIndex": 0,
+                            "AssociatePublicIpAddress": true,
+                            "Groups": [{"Ref": "SecurityGroup"}]
+                        }
+                    ],
+                    "TagSpecifications": [
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {"Key": "Name", "Value": {"Ref": "AWS::StackName"}},
+                                {"Key": "project", "Value": {"Ref": "PROJECT"}},
+                                {"Key": "service", "Value": {"Ref": "Service"}}
+                            ]
+                        },
+                        {
+                            "ResourceType": "volume",
+                            "Tags": [
+                                {"Key": "Name", "Value": {"Ref": "AWS::StackName"}},
+                                {"Key": "project", "Value": {"Ref": "PROJECT"}},
+                                {"Key": "service", "Value": {"Ref": "Service"}}
+                            ]
+                        }
+                    ],
+                    "UserData": {"Fn::Base64": {"Fn::Join": ["\n", [
+                        {"Fn::Join": ["=",["export AWS_STACK", {"Ref": "AWS::StackName"}]]},
+                        {"Fn::Join": ["=",["export APP_PROJECT", {"Ref": "PROJECT"}]]},
+                        {"Fn::Join": ["=",["export APP_ENVIRONMENT", {"Ref": "ENVIRONMENT"}]]},
+                        {"Fn::Join": ["=",["export APP_SERVICE", {"Ref": "Service"}]]},
+                        {"Fn::Join": ["=",["export APP_ROLE", {"Ref": "Role"}]]},
+                        {"Fn::Join": ["=",["export AWS_CRITICAL_EVENTS_TOPIC", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]]},
+                        {"Fn::Join": ["=",["export AWS_GENERAL_EVENTS_TOPIC", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]]},
+                        {"Fn::Join": ["=",["export AWS_PROJECT_BUCKET", {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-ProjectBucket"}}]]},
+                        {"Fn::Join": ["=",["export AWS_EBS_PV", { "Fn::If": ["PVCondition", {"Ref": "EBSPersistentVolume"}, {"Ref": "AWS::NoValue"}]}]]},
+                        {"Fn::Join": ["=",["export APP_PV_MOUNT", {"Ref": "PvMount"}]]},
+                        {"Fn::Join": ["=",["export APP_FW_PORTS_INPUT", {"Ref": "FwPortsInput"}]]},
+                        {"Fn::Join": ["=",["export APP_FW_PORTS_OUTPUT", {"Ref": "FwPortsOutput"}]]},
+                        {"Fn::Join": ["=",["export AWS_EIP_ID", {"Fn::GetAtt": ["StaticIP", "AllocationId"]}]]},
+                        {"Fn::Join": ["=",["export APP_DOCKER_IMAGE", {"Ref": "DockerImage"}]]},
+                        {"Fn::Join": ["=",["export VERSION", {"Ref": "Version"}]]}
+                    ]]}}
+                }
+            }
+        },
+
+        "AutoScalingGroup": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "LaunchTemplate": {
+                    "LaunchTemplateId": {"Ref": "LaunchTemplate"},
+                    "Version": {"Fn::GetAtt": ["LaunchTemplate", "LatestVersionNumber"]}
+                },
+                "VPCZoneIdentifier": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-VPC-SubnetPublic1"}}],
+                "MinSize": "1",
+                "MaxSize": "1",
+                "HealthCheckGracePeriod": 120,
+                "TerminationPolicies": ["OldestInstance"],
+                "NotificationConfigurations": [
+                    {
+                        "TopicARN": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}},
+                        "NotificationTypes": ["autoscaling:EC2_INSTANCE_LAUNCH_ERROR", "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+                    },
+                    {
+                        "TopicARN": {"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}},
+                        "NotificationTypes": ["autoscaling:EC2_INSTANCE_LAUNCH", "autoscaling:EC2_INSTANCE_TERMINATE"]
+                    }
+                ],
+                "Tags": [
+                    {"Key": "Name", "Value": {"Ref": "AWS::StackName"}, "PropagateAtLaunch": true}
+                ]
+            }
+        },
+
+        "LogGroupCloudwatchAgent": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-amazon-cloudwatch-agent.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupMessages": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Delete",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/messages"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupSecure": {
+            "Type": "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Delete",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/secure"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupInstanceInit": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/binu/instance_init"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupAudit": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/audit/audit.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "LogGroupAide": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": {"Fn::Sub": "${AWS::StackName}-/var/log/aide/aide.log"},
+                "RetentionInDays": {"Ref": "LogRetentionDays"}
+            }
+        },
+
+        "WarnHighCpu": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Warn when CPU utilisation above ${WarnHighCpuPercent} for 5 minutes."},
+                "Namespace": "AWS/EC2",
+                "MetricName": "CPUUtilization",
+                "Unit": "Percent",
+                "Dimensions": [{"Name": "AutoScalingGroupName", "Value": {"Ref": "AutoScalingGroup"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 1,
+                "Threshold": {"Ref": "WarnHighCpuPercent"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsGeneral"}}]
+            }
+        },
+
+        "AlarmHighCpu": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": {"Fn::Sub": "Warn when CPU utilisation above ${AlarmHighCpuPercent} for 5 minutes."},
+                "Namespace": "AWS/EC2",
+                "MetricName": "CPUUtilization",
+                "Unit": "Percent",
+                "Dimensions": [{"Name": "AutoScalingGroupName", "Value": {"Ref": "AutoScalingGroup"}}],
+                "Statistic": "Average",
+                "Period": 300,
+                "EvaluationPeriods": 1,
+                "Threshold": {"Ref": "AlarmHighCpuPercent"},
+                "ComparisonOperator": "GreaterThanThreshold",
+                "AlarmActions": [{"Fn::ImportValue": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-STATICS-TopicApplicationEventsCritical"}}]
+            }
+        }
+    }
+}

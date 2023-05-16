@@ -1,0 +1,251 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "persistent resources with a lifecycle outside the VPC. Includes SNS topics, and S3 Buckets.",
+
+    "Parameters": {
+        "PROJECT": {
+            "Description": "Project Identifier.",
+            "Type": "String"
+        },
+        "Project": {
+            "Description": "Project Identifier (lower case).",
+            "Type": "String"
+        },
+        "ENVIRONMENT": {
+            "Description": "Project Environment.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Project Environment (lower case).",
+            "Type": "String"
+        }
+    },
+
+    "Mappings": {
+        "RegionELBAccountIdMap": {
+            "af-south-1":     {"ELBAccountId": "098369216593"},
+            "ap-northeast-1": {"ELBAccountId": "582318560864"},
+            "ap-northeast-2": {"ELBAccountId": "600734575887"},
+            "ap-south-1":     {"ELBAccountId": "718504428378"},
+            "ap-southeast-1": {"ELBAccountId": "114774131450"},
+            "ap-southeast-2": {"ELBAccountId": "783225319266"},
+            "ca-central-1":   {"ELBAccountId": "985666609251"},
+            "eu-central-1":   {"ELBAccountId": "054676820928"},
+            "eu-west-1":      {"ELBAccountId": "156460612806"},
+            "eu-west-2":      {"ELBAccountId": "652711504416"},
+            "sa-east-1":      {"ELBAccountId": "507241528517"},
+            "us-east-1":      {"ELBAccountId": "127311923021"},
+            "us-east-2":      {"ELBAccountId": "033677994240"},
+            "us-west-1":      {"ELBAccountId": "027434742980"},
+            "us-west-2":      {"ELBAccountId": "797873946194"}
+        }
+    },
+
+    "Resources": {
+
+        "TopicApplicationEventsCritical": {
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "TopicName": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-events-critical"},
+                "Subscription": [
+                    {"Protocol": "lambda", "Endpoint": {"Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UTILITIES-PROD-SNStoEmail"}}
+                ]
+            }
+        },
+
+        "TopicApplicationEventsGeneral": {
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "TopicName": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}-events-general"},
+                "Subscription": [
+                    {"Protocol": "lambda", "Endpoint": {"Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UTILITIES-PROD-SNStoEmail"}}
+                ]
+            }
+        },
+
+        "ProjectBucket": {
+            "Type": "AWS::S3::Bucket",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "BucketName": {"Fn::Sub": "${Project}-${Environment}-${AWS::AccountId}"},
+                "PublicAccessBlockConfiguration": {
+                    "BlockPublicAcls": true,
+                    "IgnorePublicAcls": true,
+                    "BlockPublicPolicy": true,
+                    "RestrictPublicBuckets": true
+                },
+                "BucketEncryption": {
+                    "ServerSideEncryptionConfiguration": [
+                        {
+                            "BucketKeyEnabled": true,
+                            "ServerSideEncryptionByDefault": {
+                                "SSEAlgorithm": "aws:kms",
+                                "KMSMasterKeyID": {"Fn::Sub": "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"}
+                            }
+                        }
+                    ]
+                },
+                "OwnershipControls": {
+                    "Rules": [
+                        {
+                            "ObjectOwnership": "BucketOwnerEnforced"
+                        }
+                    ]
+                },
+                "VersioningConfiguration": {
+                    "Status": "Enabled"
+                },
+                "Tags": [
+                    {"Key": "description", "Value": {"Fn::Sub": "Project bucket for ${PROJECT}"}}
+                ]
+            }
+        },
+
+        "LogsBucket": {
+            "Type": "AWS::S3::Bucket",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "BucketName": {"Fn::Sub": "${Project}-${Environment}-logs-${AWS::AccountId}"},
+                "PublicAccessBlockConfiguration": {
+                    "BlockPublicAcls": true,
+                    "IgnorePublicAcls": true,
+                    "BlockPublicPolicy": true,
+                    "RestrictPublicBuckets": true
+                },
+                "BucketEncryption": {
+                    "ServerSideEncryptionConfiguration": [
+                        {
+                            "BucketKeyEnabled": true,
+                            "ServerSideEncryptionByDefault": {
+                                "SSEAlgorithm": "AES256"
+                            }
+                        }
+                    ]
+                },
+                "LifecycleConfiguration": {
+                    "Rules": [{
+                        "AbortIncompleteMultipartUpload": { "DaysAfterInitiation" : 5 },
+                        "ExpirationInDays": 180,
+                        "NoncurrentVersionExpirationInDays": 180,
+                        "Status": "Enabled"
+                    }]
+                },
+                "OwnershipControls": {
+                    "Rules": [
+                        {
+                            "ObjectOwnership": "BucketOwnerEnforced"
+                        }
+                    ]
+                },
+                "Tags": [
+                    {"Key": "description", "Value": {"Fn::Sub": "Logs bucket for ${PROJECT}"}}
+                ]
+            }
+        },
+
+        "LogsBucketPolicy": {
+            "Type": "AWS::S3::BucketPolicy",
+            "Properties": {
+                "Bucket" : {"Ref": "LogsBucket"},
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Principal": {"AWS": [{"Fn::FindInMap": ["RegionELBAccountIdMap", {"Ref": "AWS::Region"}, "ELBAccountId"]}]},
+                        "Resource": [
+                            {"Fn::Join": ["", [{"Fn::GetAtt": ["LogsBucket", "Arn"]},"/alb/AWSLogs/*"]]}
+                        ],
+                        "Action": ["s3:PutObject"],
+                        "Effect": "Allow"
+                        },
+                        {
+                            "Sid": "AWSLogDeliveryWrite",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "delivery.logs.amazonaws.com"},
+                            "Action": "s3:PutObject",
+                            "Resource": [
+                                {"Fn::Join": ["", [{"Fn::GetAtt": ["LogsBucket", "Arn"]},"/VPC-LOGS/*"]]}
+                            ],
+                            "Condition": {
+                                "StringEquals": {
+                                    "aws:SourceAccount": {"Fn::Sub": "${AWS::AccountId}"}
+                                }
+                            }
+                        },
+                        {
+                            "Sid": "AWSLogDeliveryCheck",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "delivery.logs.amazonaws.com"},
+                            "Action": ["s3:GetBucketAcl", "s3:ListBucket"],
+                            "Resource": {"Fn::GetAtt": ["LogsBucket", "Arn"]},
+                            "Condition": {
+                                "StringEquals": {
+                                    "aws:SourceAccount": {"Fn::Sub": "${AWS::AccountId}"}
+                                }
+                            }
+                        }
+                  ]
+                }
+            }
+        },
+
+        "AppMesh": {
+            "Type": "AWS::AppMesh::Mesh",
+            "Properties": {
+                "MeshName": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}"},
+                "Spec": {
+                    "EgressFilter": {
+                        "Type": "ALLOW_ALL"
+                    }
+                }
+            }
+        },
+        "EcsCluster": {
+            "Type": "AWS::ECS::Cluster",
+            "Properties": {
+                "ClusterName": {"Fn::Sub": "${PROJECT}-${ENVIRONMENT}"},
+                "ClusterSettings": [
+                    {"Name": "containerInsights", "Value": "enabled"}
+                ]
+            }
+        }
+
+    },
+
+    "Outputs": {
+        "TopicApplicationEventsCritical": {
+            "Description": "Topic for publishing application critical events.",
+            "Value": {"Ref": "TopicApplicationEventsCritical"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-TopicApplicationEventsCritical"}}
+        },
+        "TopicApplicationEventsGeneral": {
+            "Description": "Topic for publishing application general events.",
+            "Value": {"Ref": "TopicApplicationEventsGeneral"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-TopicApplicationEventsGeneral"}}
+        },
+        "EcsCluster": {
+            "Description": "Moya Connect ECS Cluster",
+            "Value": {"Ref": "EcsCluster"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-EcsCluster"}}
+        },
+        "ProjectBucket": {
+            "Description": "Project bucket name.",
+            "Value": {"Ref": "ProjectBucket"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-ProjectBucket"}}
+        },
+        "ProjectBucketArn": {
+            "Description": "Project bucket ARN.",
+            "Value": {"Fn::GetAtt": ["ProjectBucket", "Arn"]},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-ProjectBucketArn"}}
+        },
+        "LogsBucket": {
+            "Description": "Logs bucket name.",
+            "Value": {"Ref": "LogsBucket"},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-LogsBucket"}}
+        },
+        "LogsBucketArn": {
+            "Description": "Logs bucket ARN.",
+            "Value": {"Fn::GetAtt": ["LogsBucket", "Arn"]},
+            "Export": {"Name": {"Fn::Sub": "${AWS::StackName}-LogsBucketArn"}}
+        }
+    }
+}
